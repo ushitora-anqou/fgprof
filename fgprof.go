@@ -4,6 +4,7 @@
 package fgprof
 
 import (
+	"fmt"
 	"io"
 	"runtime"
 	"strings"
@@ -39,7 +40,14 @@ func Start(w io.Writer, format Format) func() error {
 
 	return func() error {
 		stopCh <- struct{}{}
-		return writeFormat(w, stackCounts.HumanMap(prof.SelfFrame()), format, hz)
+		switch format {
+		case FormatFolded:
+			return writeFolded(w, stackCounts.HumanMap(prof.SelfFrame()))
+		case FormatPprof:
+			return toPprof(stackCounts.HumanMapPprof(prof.SelfFrame()), hz).Write(w)
+		default:
+			return fmt.Errorf("unknown format: %q", format)
+		}
 	}
 }
 
@@ -114,6 +122,52 @@ func (s stackCounter) Update(p []runtime.StackRecord) {
 	for _, pp := range p {
 		s[pp.Stack0]++
 	}
+}
+
+type pprofLine struct {
+	file       string
+	line       int64
+	fname      string
+	fStartLine int64
+}
+
+type pprofData struct {
+	count int
+	stack []pprofLine
+}
+
+func (s stackCounter) HumanMapPprof(exclude *runtime.Frame) map[string]pprofData {
+	m := map[string]pprofData{}
+outer:
+	for stack0, count := range s {
+		frames := runtime.CallersFrames((&runtime.StackRecord{Stack0: stack0}).Stack())
+
+		var stack []string
+		var lines []pprofLine
+		for {
+			frame, more := frames.Next()
+			if frame.Entry == exclude.Entry {
+				continue outer
+			}
+			var fStartLine int
+			if frame.Func != nil {
+				_, fStartLine = frame.Func.FileLine(frame.Func.Entry())
+			}
+			lines = append([]pprofLine{{
+				file:       frame.File,
+				line:       int64(frame.Line),
+				fname:      frame.Function,
+				fStartLine: int64(fStartLine),
+			}}, lines...)
+			stack = append([]string{frame.Function}, stack...)
+			if !more {
+				break
+			}
+		}
+		key := strings.Join(stack, ";")
+		m[key] = pprofData{count: count, stack: lines}
+	}
+	return m
 }
 
 // @TODO(fg) create a better interface that avoids the pprof output having to

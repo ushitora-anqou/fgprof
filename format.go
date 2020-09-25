@@ -20,15 +20,12 @@ const (
 	FormatPprof Format = "pprof"
 )
 
-func writeFormat(w io.Writer, s map[string]int, f Format, hz int) error {
-	switch f {
-	case FormatFolded:
-		return writeFolded(w, s)
-	case FormatPprof:
-		return toPprof(s, hz).Write(w)
-	default:
-		return fmt.Errorf("unknown format: %q", f)
-	}
+func writeFormatFolded(w io.Writer, s map[string]int) error {
+	return writeFolded(w, s)
+}
+
+func writeFormatPprof(w io.Writer, src map[string]pprofData, hz int) error {
+	return toPprof(src, hz).Write(w)
 }
 
 func writeFolded(w io.Writer, s map[string]int) error {
@@ -41,7 +38,7 @@ func writeFolded(w io.Writer, s map[string]int) error {
 	return nil
 }
 
-func toPprof(s map[string]int, hz int) *profile.Profile {
+func toPprof(src map[string]pprofData, hz int) *profile.Profile {
 	functionID := uint64(1)
 	locationID := uint64(1)
 	line := int64(1)
@@ -60,24 +57,28 @@ func toPprof(s map[string]int, hz int) *profile.Profile {
 		},
 	}
 
-	for stack, count := range s {
+	for stack, data := range src {
+		count := data.count
 		sample := &profile.Sample{
 			Value: []int64{
 				int64(count),
 				int64(1000 * 1000 * 1000 / hz * count),
 			},
 		}
-		for _, fnName := range strings.Split(stack, ";") {
+		for i, fnName := range strings.Split(stack, ";") {
+			fr := data.stack[i]
 			function := &profile.Function{
-				ID:   functionID,
-				Name: fnName,
+				ID:        functionID,
+				Name:      fnName,
+				Filename:  fr.file,
+				StartLine: fr.fStartLine,
 			}
 			p.Function = append(p.Function, function)
 
 			location := &profile.Location{
 				ID:      locationID,
 				Mapping: m,
-				Line:    []profile.Line{{Function: function}},
+				Line:    []profile.Line{{Function: function, Line: fr.line}},
 			}
 			p.Location = append(p.Location, location)
 			sample.Location = append([]*profile.Location{location}, sample.Location...)
